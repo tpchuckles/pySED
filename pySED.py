@@ -12,7 +12,7 @@ def qdump(filename,timescaling=1,convert=True,safemode=False): # OBSCENELY FAST 
 		return pos,vel,ts,types
 
 	from ovito.io import import_file # TODO WEIRD BUG, AFTER THIS RUNS, WE CAN'T PLOT STUFF WITH NICEPLOT. WE GET THE FOLLOWING ERROR: ImportError: Cannot load backend 'TkAgg' which requires the 'tk' interactive framework, as 'qt' is currently running
-	# WHY TF DOES OVITO LOAD qt AND HOW DO WE UNLOAD IT??
+	# WHY DOES OVITO LOAD qt AND HOW DO WE UNLOAD IT??
 	print("reading qdump")
 	pipeline = import_file(filename)
 	nt=pipeline.source.num_frames
@@ -91,9 +91,9 @@ def absMin(dxyz_a,dxyz_b): # use this for getting absolute distances with wrappi
 # Spectral Energy Density: phonon dispersions!
 # avg - average positions [a,xyz] (import using scrapeDump or qdump. average via avgPos)
 # velocities - time-dependent atom velocities [t,a,xyz] (as imported via scrapeDump or qdump)
-# p_xyz - 0,1,2 indicating if we should track positions in x,y or z (this is your wave-vector direction)
-# v_xyz - like v_xyz, but for which velocities to track. L vs T modes
-# a - this is your specified periodicity (or lattice constant for crystals)
+# p_xyz - 0,1,2 indicating if we should track positions in x,y or z (this is your wave-vector direction). vector also allowed: [1,1,0] for waves in 110
+# v_xyz - like p_xyz, but for which velocities to track (L vs T modes). vectors also allowed: p_xyz=[1,1,0] v_xyz=[-1,1,0] are transverse modes in 110 for example
+# a - this is your specified periodicity (or lattice constant for crystals). 1/a --> highest k value
 # nk - resolution in k-space. note your resolution in ω is inherited from ts
 # bs - optional: should be a list of atom indices to include. this allows the caller to sum over crystal cell coordinates (see discussion on Σb below)
 # TODO: currently k_max=π/a. this is convention. so if you want your x axis to be wavelength⁻¹, you need to divide by π? should we do this for you? idk
