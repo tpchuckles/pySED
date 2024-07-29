@@ -193,38 +193,6 @@ def SED(avg,velocities,p_xyz,v_xyz,a,nk=100,bs='',perAtom=False,ks='',keepComple
 			Zs[:,j]+=np.absolute(integrated)**2
 	return Zs,ks,ws
 
-# angleRange A : 0 to π, useful for evaluating accoustic vs optical modes (0 vs 180° phase difference between atomic basis atoms)
-# angleRange B : -π/2 to π/2, useful for evaluating orbit-like modes (chiral, AOM, 90° phase difference between two degenerate branches)
-# angleRange C : like B, but vectorized
-def SEDphase(Z1,Z2,angleRange="A"):
-	nw,nk=np.shape(Z1) ; Zs=np.zeros((nw,nk))
-	# ALL AT ONCE IS PROBABLY A BIT FASTER, AND YOU DON'T NEED TO MESS WITH THE DOTS AND CROSSES??? unwrapping/folding is more confusing though
-	if angleRange=="C":									#       π/2
-		t1=np.arctan2(Z1.real,Z1.imag)							#   1    |     2 
-		t2=np.arctan2(Z2.real,Z2.imag)							#     .-'|'-.
-		dt=t1-t2 # may have results outside π/2 < θ < π/2, so we gotta wrap those	# 0__/___|___\___π
-		dt[dt>np.pi]-=2*np.pi	# step 1 is to unwrap, but keep quadrant: 3π/2=-π/2	# 2π \   |   /
-		dt[dt<-np.pi]+=2*np.pi								#     `-.|.-'
-		# step 2 is to reflect Q2 and Q3 back to Q1 and Q4				#  4     |     3
-		Q2=np.zeros(dt.shape) ; Q2[dt>np.pi/2]=1 ; dt[Q2==1]*=-1 ; dt[Q2==1]+=np.pi	#       3π/2
-		Q3=np.zeros(dt.shape) ; Q3[dt<-np.pi/2]=1 ; dt[Q3==1]*=-1 ; dt[Q3==1]-=np.pi
-		return dt
-
-	for i in tqdm(range(nw)):
-		for j in range(nk):
-			v1=np.asarray( [ Z1[i,j].real , Z1[i,j].imag ] ) # Re/Im parts are vectors. we want the angle between them
-			v2=np.asarray( [ Z2[i,j].real , Z2[i,j].imag ] )
-			m1=np.sqrt(np.sum(v1**2)) ; m2=np.sqrt(np.sum(v2**2))
-			if angleRange=="A":		# yields angles 0 to π
-				Z=np.dot(v1,v2)/m1/m2	# dot product: 1 if vectors are parallel, zero if vectors are perpendicular. 
-				angle=np.arccos(Z)	# angle between vectors (if using dot). θ=cos⁻¹( (a•b)/|a||b| )
-			elif angleRange=="B": 		# yields angles -π/2 to π/2
-				Z=np.cross(v1,v2)	# cross-product: ±1 is vectors are perpendicular, sign denotes lagging or leading. 
-				Z*=1/m1/m2		# note: cross product scales with magnitude of vectors (as did dot product above)
-				angle=np.arcsin(Z)	# θ=sin⁻¹(...), cos⁻¹ is signless
-			Zs[i,j]=angle
-	return Zs
-
 # save positions (na,xyz) to a positions file. useful for visualizing avg and stuff
 def outToPositionsFile(filename,pos,types,sx,sy,sz,masses):
 	import datetime
