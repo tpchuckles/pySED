@@ -3,3 +3,5 @@ This is just a basic set of python functions for running Spectral Energy Density
 extra functions are included: a dump file reader using ovito's python tools, a position averager (with wrapping for periodic boundary conditions), etc
 
 i also included an example script showing how to use the SED function, and example outputs. example script relies on https://github.com/ExSiTE-Lab/niceplot
+
+shoutout to https://github.com/tyst3273/phonon-sed for the excellent introduction and explanation into the math
