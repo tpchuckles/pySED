@@ -91,14 +91,14 @@ def absMin(dxyz_a,dxyz_b): # use this for getting absolute distances with wrappi
 # Spectral Energy Density: phonon dispersions!
 # avg - average positions [a,xyz] (import using scrapeDump or qdump. average via avgPos)
 # velocities - time-dependent atom velocities [t,a,xyz] (as imported via scrapeDump or qdump)
-# p_xyz - 0,1,2 indicating if we should track positions in x,y or z (this is your wave-vector direction). vector also allowed: [1,1,0] for waves in 110
-# v_xyz - like p_xyz, but for which velocities to track (L vs T modes). vectors also allowed: p_xyz=[1,1,0] v_xyz=[-1,1,0] are transverse modes in 110 for example
+# p_xyz - 0,1,2 indicating if we'll track positions in x,y or z (this is your wave-vector direction). vector also allowed: e.g. [1,1,0] for waves in 110
+# v_xyz - like p_xyz, but for which velocities to track (L vs T modes). e.g. p_xyz=[1,1,0] v_xyz=[-1,1,0] are transverse modes in 110
 # a - this is your specified periodicity (or lattice constant for crystals). 1/a --> highest k value
-# nk - resolution in k-space. note your resolution in ω is inherited from ts
+# nk - resolution in k-space. note your resolution in ω is inherited from your time sampling
 # bs - optional: should be a list of atom indices to include. this allows the caller to sum over crystal cell coordinates (see discussion on Σb below)
 # TODO: currently k_max=π/a. this is convention. so if you want your x axis to be wavelength⁻¹, you need to divide by π? should we do this for you? idk
 # TODO: ditto for ω, which is rad/timestep. you need to scale it accordingly (timesteps to time units) and include 2π to get to Hz vs rad/s
-def SED(avg,velocities,p_xyz,v_xyz,a,nk=100,bs='',perAtom=False,ks='',keepComplex=False):
+def SED(avg,velocities,p_xyz,v_xyz,a,nk=100,bs='',perAtom=False,ks='',keepComplex=False,masses=None,hannFilter=True):
 	nt,na,nax=np.shape(velocities)
 	if len(bs)==0:
 		bs=np.arange(na)
@@ -163,8 +163,21 @@ def SED(avg,velocities,p_xyz,v_xyz,a,nk=100,bs='',perAtom=False,ks='',keepComple
 		v_xyz=np.asarray(v_xyz)
 		d=v_xyz[None,:]*np.ones((nt*na,3))
 		vs=np.einsum('ij, ij->i',vflat,d)
-		vs=np.reshape(vs,(nt,na)) # and unflattening at the end: t*a,xyz --> t,a,xyz
+		vs=np.reshape(vs,(nt,na)) # and unflattening at the end: t*a --> t,a
 		vs/=np.linalg.norm(v_xyz)
+
+	#if vacf:
+	#	for a in range(na):
+	#		v=np.correlate(vs[:,a],vs[:,a],mode="full") # https://stackoverflow.com/questions/643699/how-can-i-use-numpy-correlate-to-do-autocorrelation
+	#		vs[:,a]=v[:nt]-np.mean(v[:nt])
+	
+	if masses is not None:
+		vs=vs[:,:]*masses[None,:] # t,a indices for velocities
+
+	if hannFilter:
+		ts=np.linspace(0,np.pi,len(vs)) ; hann=np.sin(ts)**2
+		#import sys; sys.path.insert(1,"../../niceplot") ; from niceplot import plot ; plot([ts],[hann],markers=['-'])
+		vs*=hann[:,None]
 
 	if perAtom:
 		Zs=np.zeros((nt2,nk,na),dtype=complex)
