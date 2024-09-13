@@ -197,6 +197,7 @@ def SED(avg,velocities,p_xyz,v_xyz,a,nk=100,bs='',perAtom=False,ks='',keepComple
 		F=vs[:,:]*np.exp(1j*k*xs[None,:]) # t,a
 		# Σn u°(a,t) * exp( i k x̄ )
 		F=np.sum(F,axis=1)/na # t,a --> t
+		#F=np.correlate(F,F,mode="full") ; F=F[:nt] # Harrison says this gives less noise (for fluids)
 		# ∫ { Σn u°(a,t) exp( i k x) } * exp( - i ω t ) dt AKA FFT{ Σn u°(a,t) exp( i k x) }
 		integrated=np.fft.fft(F)[:nt2] # t --> ω. trim off negative ω
 		# | ∫ Σn u°(a,t) exp( i k x) * exp( - i ω t ) dt |²
@@ -221,3 +222,150 @@ def outToPositionsFile(filename,pos,types,sx,sy,sz,masses):
 	with open(filename,'w') as f:
 		for l in lines:
 			f.write(l+"\n")
+
+# returns a function which can be passed a triplet of three atoms' positions, [ijk,xyz], and return the potential energy
+def potentialFunc_SW(swfile):
+	r_cut,potential2Body,potential3Body=SW(swfile)
+	print("r_cut",r_cut)
+	def potential(pos):
+		vij=pos[1,:]-pos[0,:]
+		vik=pos[2,:]-pos[0,:]
+		rij=lVec(vij) ; rik=lVec(vik)
+		if rij>r_cut or rik>r_cut:
+			return 0
+		tijk=angBetween(vij,vik)
+		return potential3Body(rij,rik,tijk)+potential2Body(rij)
+	return potential
+
+#E=ΣᵢΣⱼϕ₂(rᵢⱼ)+ΣᵢΣⱼΣₖϕ₃(rᵢⱼ,rᵢₖ,θᵢⱼₖ)
+#ϕ₂ is 2-body component, ϕ₂(rᵢⱼ)=A ϵ *[ B*(σ/r)^p-(σ/r)^q ] * exp( σ / r-a*σ )
+#ϕ₃ is 3-body component, ϕ₃(rᵢⱼ,rᵢₖ,θᵢⱼₖ)=λ ϵ (cos(θᵢⱼₖ)-cos₀)² exp( γᵢⱼσᵢⱼ / r-aᵢⱼ*σᵢⱼ ) exp( γᵢₖσᵢₖ / r-aᵢₖ*σᵢₖ )
+#calculate potential energy E for each atom in A as a result of its interaction with each atom in B.
+def SW(swfile):
+	sw=readSW(swfile)
+	e=sw["e"];s=sw["s"];a=sw["a"];l=sw["l"];g=sw["g"];c=sw["c"];A=sw["A"];B=sw["B"];p=sw["p"];q=sw["q"];t=sw["t"]
+	r_cut=a*s*.99 #BEWARE: check this if you change sw potentials! use sw2LJ()
+	def potential2Body(rij):
+		return A*e*(B*(s/rij)**p-(s/rij)**q)*np.exp(s/(rij-a*s))
+	def potential3Body(rij,rik,tijk):
+		return l*e*(np.cos(tijk)-c)**2*np.exp(g*s/(rij-a*s))*np.exp(g*s/(rik-a*s))
+	return r_cut,potential2Body,potential3Body
+
+def readSW(swfile):
+	f=open(swfile,'r',errors='ignore') #some versions of python choke on readlines() if there are unicode characters in the file being read (eg, umlauts because some germans developed your SW potential)
+	entries={}
+	lines=f.readlines()
+	for l in lines:
+		if len(l)<1 or l[0]=="#" or len(l.split())<14:
+			continue
+		#print(l)			#                  0       1     2 3      4     5         6 7 8 9 10
+		l=list(map(float,l.split()[3:]))	#elem1,elem2,elem3,epsilon,sigma,a,lambda,gamma,costheta0,A,B,p,q,tol
+		names="e,s,a,l,g,c,A,B,p,q,t"
+		for n,v in zip(names.split(','),l):
+			entries[n]=float(v)
+		return entries	
+
+# length of a vector
+def lVec(v1):
+	return np.sqrt( np.sum( v1**2 ) )
+
+# angle between two vectors
+def angBetween(v1,v2): # cos(θ)=(vᵢⱼ•vᵢₖ)/(|vᵢⱼ|*|vᵢₖ|)
+	return np.arccos(np.dot(v1,v2)/(lVec(v1)*lVec(v2))) #cos(θ)=(vᵢⱼ•vᵢₖ)/(|vᵢⱼ|*|vᵢₖ|)
+
+# For each atom i, find atoms j,k,l,m,n,o within the radii limits, return i,j,k,l...
+# avgs - [na,xyz]
+def findNeighbors(avgs,r_min=0,r_max=np.inf):
+	neighbors=[]
+	na=len(avgs) ; indices=np.arange(na)
+	print("calculating neighbor distances")
+	d0=np.sqrt( np.sum( (avgs[:,None,:]-avgs[None,:,:])**2 , axis=2) ) # √(dx²+dy²+dz²), yields an na x na "lookup" matrix of distances
+	print("iterating")
+	for i in range(na):
+		mask=np.zeros(na)+1 ; mask[d0[i,:]<r_min]=0 ; mask[d0[i,:]>r_max]=0 ; mask[i]=0
+		neighbors.append([i]+list(indices[mask==1])) # ensure atom i is first in the list!
+	return neighbors
+
+# only keep neighbors when at least one is in both groups
+# neighbors - a potentially-ragged list of lists, each list containing atom IDs
+# As, Bs - lists of atom IDs
+def filterNeighborsByGroup(neighbors,As,Bs):
+	filtered=[]
+	for ijk in neighbors:
+		inA=[ i for i in ijk if i in As ]
+		inB=[ i for i in ijk if i in Bs ]
+		if len(inA)>0 and len(inB)>0:
+			filtered.append(ijk)
+	return filtered
+
+# positions - [nt,na,xyz]
+# potential - a function which can be passed a list of atom's positions [na,xyz] and return the potential energy
+# atomSets - lists of atomIDs to feed into potential. e.g. i,j,k triplets for a 3-body potential. note that some potentials differentiate between i,j,k and i,k,j (stillinger-weber does), so make sure both are passed if you care.
+# HOW DOES THIS WORK? 
+# for any potential, you can find the force on an atom by perturbing its position and recalculating the potential energy. 
+# Fₓ=-(Eₚ-Eₒ)/dx (if we perturbed in the x direction)
+# for a pair-wise potential, forces are equal-and-opposite. calculate a force on one atom, this *must be* the force from the other atom.
+# Fᵢ=Fᵢⱼ=-Fⱼᵢ
+# for a many-body potential, we can assume satellite atoms do not interact (they do, but we'll consider those forces when we consider those atoms as the central atom. the potential does not specify forces, it specifies potential energy. for anything unspecified, we can assume, and so long as the potential is satisfied, then the assumption is valid). 
+# Fᵢ=Fᵢⱼ+Fᵢₖ+Fᵢₗ+Fᵢₘ+Fᵢₙ+Fᵢₒ+... , Fⱼₖ=Fₖⱼ=0 , Fⱼₗ=Fₗⱼ=0, .... for central atom i, and satellite atoms j,k,l,m,n,o...
+# which means we can simply perturb the satellites, finding Fⱼ, which is guaranteed to be Fⱼᵢ (since Fⱼₖ=Fⱼₗ=Fⱼₘ=Fⱼₙ=Fⱼₒ=...=0)
+def calculateInteratomicForces(positions,potential,atomSets,perturbBy=.0001):
+	os.makedirs("calculateInteratomicForces",exist_ok=True)
+	nt=len(positions)
+	nBody=len(atomSets[0])
+	for ijk in tqdm(atomSets):
+		for xyz in range(3):
+			forces=np.zeros((nt,nBody)) # will hold force at each timestep: total on i, then contribution from j,k,etc
+			for t in range(nt):
+				atoms=positions[t,ijk,:]
+				Vo=potential(atoms)					# potential energy for unperturbed atomic configuration
+				for j in range(nBody):					# for each atom in the set
+					dx=np.zeros((nBody,3)) ; dx[j,xyz]=perturbBy	# perturbation matrix: perturb the jth atom, in x or y or z
+					Vi=potential(atoms+dx)				# recalculate potential, perturbing atom j in x y or z
+					forces[t,j]=-(Vi-Vo)/perturbBy			# Fₓ=-dE/dx (if Eₚ > Eₒ, Force is in negative direction)
+			xyzString=["x","y","z"][xyz]
+			ijkString=",".join([ str(j) for j in ijk ])
+			fileout="calculateInteratomicForces/F"+xyzString+"_"+ijkString+".txt"
+			np.savetxt(fileout,forces)
+
+# Power = Force * velocity , Fₓ=dU/dx. for two atoms interacting: Qᵢⱼ=dUᵢ/drᵢⱼ *  vᵢ - dUⱼ/drⱼᵢ * vⱼ , "Qnet: power on i by j minus power on j by i"
+# In the time domain: Qᴬᴮ(t)=ΣᵢΣⱼ( dUᵢ(t)/drᵢⱼ * vᵢ(t) - dUⱼ(t)/dⱼᵢ * vⱼ(t) )
+# In the frequency domain: Qᴬᴮ(ω)=ΣᵢΣⱼ( dUᵢ(ω)/drᵢⱼ * vᵢ(ω) - dUⱼ(ω)/dⱼᵢ * vⱼ(ω) )
+# Note that these are NOT the same! ℱ[ f(t) * g(t) ] ≠ ℱ[ f(t) ] * ℱ[ g(t) ] (or f(ω)*g(ω))
+# another way to think about this is: our fundamental question is "what (frequency of) oscillatory forces result in energy flow", which is a slightly separate question from simply "what oscillatory forces are there" (or oscillatory velocities, as in vDOS). Imagine the simplest case where F=-sin(ωt) and v=cos(ωt). The force "leads" the velocity slightly, and this is a case where the there is there clearly ought to be a net Q at ω. mathematically though, Q(t)=sin(ωt)*cos(ωt) is a function with *half* the periodicity (function is positive when F and v are both positive, or when F and v are both negative). clearly we want F(ω) and v(ω) separate, i.e. ℱ[ F(t) ] * ℱ[ v(t) ]
+# So if ℱ[ f(t) * g(t) ] ≠ ℱ[ f(t) ] * ℱ[ g(t) ], then what IS ℱ[ f(t) ] * ℱ[ g(t) ] in the time domain?
+# ℱ[ f(t) ] * ℱ[ g(t) ] = ℱ[ ⟨ f(t),g(t) ⟩ ] (where ⟨-⟩ is a cross-correlation) 
+# So Q(ω) is NOT simply ℱ[ Q(t) ], but either ℱ[ F(t) ] * ℱ[ v(t) ] or ℱ[ ⟨ F(t),v(t) ⟩ ]
+# And expanding this to "power between sides A and B", we sum over atoms in A and B, only including instances where i is in A and j is in B
+# And practically in the code, how do we get forces? and what about the case of a 3-body potential?
+# Consider atoms j-i-k where i is the central atom. 
+# Let's start with "forces on j" (Fⱼ). compute energy (Eₒ), perturn atom j by dx and recalculate (Eₚⱼ). Fⱼₓ=-(Eₚⱼ-Eₒ)/dx (if Eₚⱼ > Eₒ, force is in negative direction). If we perturbed j, this is net force on j (Fⱼ)
+# For a many-body potential, we will make the assumption that satellite atoms only experience a force from the central atom: Fⱼₖ=0, thus Fⱼᵢ=Fⱼ ("force on j by i is the same as the net force on j"). repeat for Fₖᵢ=Fₖ=(Eₚₖ-Eₒ)/dx. For forces on i, we can say interactions are "equal and opposite", Fᵢⱼ=-Fⱼᵢ, Fᵢ=-Fₖᵢ, and then for net force on i, we can sum: Fᵢ=Fᵢⱼ+Fᵢₖ
+# Is this assumption of Fⱼₖ=Fₖⱼ=0 allowed?? the potential does not define forces, it defines energy. so we can make whatever statements we want so long as the energy expressions are satisfied! 
+# How does this code work? you'll want to pre-calculate forces (using the function calculateInteratomicForces, which will create a folder by the same name, with files for forces in x,y,z for groups of atomd). pass velocities, and lists of indices for A and B. SHF code is quite simple, we just cycle through and sum as appropriate (taking note that, for example, Fj only contributes if atoms i,j are on opposite sides and so on). cross-correlate velocities and forces (in the time domain), and FFT.
+def SHF(velocities,As,Bs):
+	forceFiles=glob.glob("calculateInteratomicForces/*")
+	nt=len(velocities)
+	Qt=np.zeros((nt,3))
+	for f in tqdm(forceFiles):
+		xyz=["Fx","Fy","Fz"].index(f.split("/")[-1].split("_")[0])
+		ijk=f.split("/")[-1].split("_")[-1].replace(".txt","").split(",")
+		ijk=[ int(i) for i in ijk ]
+		inA=[ i for i in ijk if i in As ]
+		inB=[ i for i in ijk if i in Bs ]
+		forces=np.loadtxt(f)		# columns are: Fᵢ, Fⱼ, Fₖ... these came from perturbing atoms i,j,k and so on.
+		# if atom i on the left, j,k,etc gaining energy is +Q and i gaining energy is -Q. flipped if i on right
+		i=ijk[0]
+		sign={True:1,False:-1}[ i in As ]
+		# we're going to sum up forces acting on by only atoms on the other side of the boundary
+		Fi=np.zeros(nt)
+		for c,j in enumerate(ijk):
+			if c==0:
+				continue
+			if ( i in As and j in Bs ) or ( i in Bs and j in As ): # i on left, j on right, or vice-versa. IF SO, Qⱼ counts, Qⱼ=Fⱼ*vⱼ
+				# Fⱼ was found by perturbing j, and we assumed Fⱼₖ=Fₖⱼ=0, therefore: Fⱼ=Fⱼᵢ, i.e. "F on j by i"
+				Qt[:,xyz]+=sign*np.correlate(forces[:,c],velocities[:,j,xyz],mode="same")
+				# Fᵢⱼ=-Fⱼᵢ ("F on i by j, is equal-and-opposite, of F on j by i"). and Fᵢ=Fᵢⱼ+Fᵢₖ (ifof j and k are across the boundary)
+				Fi-=forces[:,c] 
+		Qt[:,xyz]-=sign*np.correlate(Fi,velocities[:,i,xyz],mode="same") # Qᵢ=(Fᵢⱼ+Fᵢₖ+Fᵢₗ+Fᵢₘ...)*vᵢ (if j,k,l,m are all across the boundary)
+	return np.fft.fft(Qt,axis=0)
