@@ -2,6 +2,25 @@ import numpy as np
 import glob,os
 from tqdm import tqdm
 
+def scrapePos(filename):
+	lines=open(filename,'r').readlines()
+	for i,l in enumerate(lines):
+		numCols=len(l.split(" "))
+		hasNonNumChars=( False in [ c in "0123456789.e- \n" for c in l ])
+		if hasNonNumChars:
+			continue
+		if numCols==6 or numCols==5:
+			break
+	#print("scrapePos: data starts on line",i)
+	data=np.loadtxt(filename,delimiter=" ",skiprows=i)
+	#print(data)
+	if numCols==5:
+		pos=data[:,2:] ; types=data[:,1].astype(int)
+	else:
+		pos=data[:,3:] ; types=data[:,2].astype(int)
+	return pos,types
+
+
 def qdump(filename,timescaling=1,convert=True,safemode=False): # OBSCENELY FAST IN COMPARISON TO scrapeDump()
 	if os.path.exists(filename+"_ts.npy"):
 		print("ignoring qdump, reading npy files instead")
@@ -142,7 +161,7 @@ def SED(avg,velocities,p_xyz,v_xyz,a,nk=100,bs='',perAtom=False,ks='',keepComple
 	# user should simply call this function multiple times, passing the "bs"
 	# argument with a list of atom indices for us to use
 
-	if isinstance(p_xyz,(int,float)): # 0,1,2 --> x,y,z
+	if isinstance(p_xyz,(int,float,np.integer)): # 0,1,2 --> x,y,z
 		xs=avg[bs,p_xyz] # a,xyz --> a
 	else:	# [1,0,0],[1,1,0],[1,1,1] and so on
 		# https://math.stackexchange.com/questions/1679701/components-of-velocity-in-the-direction-of-a-vector-i-3j2k
@@ -155,7 +174,7 @@ def SED(avg,velocities,p_xyz,v_xyz,a,nk=100,bs='',perAtom=False,ks='',keepComple
 		xs/=np.linalg.norm(p_xyz)
 
 	# TODO mongo ram usage for rotation step vs simply using a reference to the existing matrix, if velocities is huge, e.g. simulations with a 100000 atoms, e.g. 50x50x5 UC silicon (8 atoms per UC), as required for 110 SED
-	if isinstance(v_xyz,(int,float)):
+	if isinstance(v_xyz,(int,float,np.integer)):
 		vs=velocities[:,bs,v_xyz] # t,a,xyz --> t,a
 	else: 
 		# for handling velocities, there's just one more step from above: "flattening" first two axes t,a,xyz --> t*a,x,y,z
@@ -207,6 +226,71 @@ def SED(avg,velocities,p_xyz,v_xyz,a,nk=100,bs='',perAtom=False,ks='',keepComple
 			Zs[:,j]+=np.absolute(integrated)**2
 	return Zs,ks,ws
 
+def iSED(avg,displacements,p_xyz,k,w,a,nk=100,bs='',ks='',rescaling=1,nt=100,types=''):
+	#if rescaling=="auto":
+	#	rescaling=np.std(displacements)
+	# User passes wave direction p_xyz. regardless, we want to calculate SED for displacements in the 3 cartesian directions 
+	#if isinstance(p_xyz,(int,float)): # 0,1,2 --> x,y,z
+	v_xyzs=np.arange(3)	# each of 0,1,2 for three x,y,z directions
+	#else:
+	#	v_xyzs=[p_xyz]		# e.g. [1,1,0]
+	#	perpto=[1,0,0]
+	#	if np.sqrt(np.sum(np.cross(p_xyz,perpto)**2))==0:
+	#		perpto=[0,1,0]
+	#	v_xyzs.append(np.cross(p_xyz,perpto))
+	#	v_xyzs.append(np.cross(p_xyz,v_xyzs[-1]))
+	if len(bs)==0:
+		bs=[ np.arange(len(avg)) ]
+		print("WARNING: IF YOU HAVE A CRYSTAL WITH A BASIS GREATER THAN 1, YOU WILL NEED TO SPECIFY BASIS INDICES TO SEE OPTIC MODES IN THE FIRST BRILLOUIN ZONE")
+	wiggles=np.zeros((nt,len(avg),4))			# we're going to "reconstruct" the atomic motion, which we dump in here
+	ts=np.linspace(0,2*np.pi,nt,endpoint=False)	# timesteps used for reconstruction
+	# project atomic positions onto a position vector along the wave direction
+	if isinstance(p_xyz,(int,float,np.integer)): # 0,1,2 --> x,y,z
+		xs=avg[:,p_xyz] # a,xyz --> a
+	else:	# SEE SED() FOR DETAILS
+		p_xyz=np.asarray(p_xyz)
+		d=p_xyz[None,:]*np.ones((len(avg),3)) # xyz --> a,xyz
+		xs=np.einsum('ij, ij->i',avg[:,:],d) # pos • vec, all at once
+		xs/=np.linalg.norm(p_xyz)
+	for i,b in enumerate(bs):
+		# Default in the atom type based on the basis index
+		if len(types)==0:
+			wiggles[:,b,3]=i 
+		else:
+			wiggles[:,b,3]=types[b]
+		for j,v_xyz in enumerate(v_xyzs):
+			# intermediate files will be saved "dSED_b0_p0_v0.npy" for first bs array, wave direction=x, displacement direcition=x (L modes)
+			if isinstance(p_xyz,(int,float)):
+				p=str(p_xyz)
+			else:
+				p="".join([str(v) for v in p_xyz ])
+			#if isinstance(v_xyz,(int,float)):
+			v=str(v_xyz)
+			#else:
+			#	v="".join([str(v) for v in v_xyz ])
+			if os.path.exists("dSED_b"+str(i)+"_p"+p+"_v"+v+".npy"):
+				print("dSED_b"+str(i)+"_p"+p+"_v"+v+".npy already exists. skip generation")
+				Zs=np.load("dSED_b"+str(i)+"_p"+p+"_v"+v+".npy")
+				ks=np.load("dSED_ks_p"+p+".npy") ; ws=np.load("dSED_ws_p"+p+".npy")
+			else:
+				# calculate SED, keep complex result so we can reconstruct motion of atoms based on it! 
+				Zs,ks,ws=SED(avg,displacements,p_xyz,v_xyz,a,nk,bs=b,ks=ks,keepComplex=True)
+				np.save("dSED_b"+str(i)+"_p"+p+"_v"+v+".npy",Zs)
+				np.save("dSED_ks_p"+p+".npy",ks) ; np.save("dSED_ws_p"+p+".npy",ws)
+			l=np.argmin(np.absolute(ks-k)) ; m=np.argmin(np.absolute(ws-w))
+			I=Zs[m,l]
+			# reconstruct atomic motion based on exp(iωt-kx)
+			#print(I,np.shape(wiggles[:,b,v_xyz]),np.shape(I),np.shape(ts),np.shape(ks),np.shape(avg),np.shape(xs),np.shape(b))
+			wiggles[:,b,v_xyz]=np.real( I*np.exp(1j*ts[:,None]-1j*ks[l]*xs[None,b]) )
+	# rescale reconstructed displacements at the end. if auto, first scale displacements to 1, then scale back to the stdev of the original system
+	if rescaling=="auto":
+		wiggles[:,:,:3]/=np.amax(wiggles[:,:,:3])
+		wiggles[:,:,:3]*=np.std(displacements)
+	else:
+		wiggles[:,:,:3]*=rescaling
+	# final positions are: initial or average position, plus reconstructed displacements
+	outToQdump("iSED.dump",avg[:,:]+wiggles[:,:,:3],wiggles[0,:,3],10,10,10)
+
 # save positions (na,xyz) to a positions file. useful for visualizing avg and stuff
 def outToPositionsFile(filename,pos,types,sx,sy,sz,masses):
 	import datetime
@@ -219,6 +303,24 @@ def outToPositionsFile(filename,pos,types,sx,sy,sz,masses):
 	for t,xyz in zip(types,pos):
 		t=int(t) ; atxyz=[ str(v) for v in [1,t,*xyz] ]
 		lines.append(" ".join(atxyz))
+	with open(filename,'w') as f:
+		for l in lines:
+			f.write(l+"\n")
+
+# positions (nt,na,nxyz) is written to a psuedo-dump file. useful for visualizing avg and stuff
+def outToQdump(filename,pos,types,sx,sy,sz):
+	import datetime
+	now=datetime.datetime.now()
+	lines=[]#"########### lammpsScapers.py > outToPositionsFile() "+now.strftime("%Y/%m/%d %H:%M:%S")+" ###########"]
+	nt,na,nxyz=np.shape(pos)
+	for t in tqdm(range(nt)):
+		lines=lines+["ITEM: TIMESTEP",str(t+1),"ITEM: NUMBER OF ATOMS",str(na),"ITEM: BOX BOUNDS pp pp pp"]
+		for s in [sx,sy,sz]:
+			lines.append("0 "+str(s))
+		lines.append("ITEM: ATOMS id type x y z")
+		for a in range(na):
+			l=[a+1,types[a],*pos[t,a,:]]
+			lines.append(" ".join([str(v) for v in l ]))
 	with open(filename,'w') as f:
 		for l in lines:
 			f.write(l+"\n")
